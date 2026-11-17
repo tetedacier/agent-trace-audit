@@ -13,7 +13,7 @@ export function formatSessionList(sessions) {
 }
 
 export function formatSessionSummary(trace) {
-  const { tokens, tokenEconomics, toolCallStats, toolErrorsCount } = trace.diagnostics;
+  const { tokens, tokenEconomics, cacheEfficiency, thrashLoops, toolCallStats, toolErrorsCount } = trace.diagnostics;
   const userTurns = trace.turns.filter((t) => t.role === "user").length;
   const modelTurns = trace.turns.filter((t) => t.role === "assistant").length;
 
@@ -23,8 +23,16 @@ export function formatSessionSummary(trace) {
     `Turns: ${userTurns} user, ${modelTurns} assistant`,
     `Tool Invocations: ${trace.toolInvocations.length} (errors: ${toolErrorsCount})`,
     `Tokens: ${tokens.totalTokens.toLocaleString()} total (${tokens.uncachedInputTokens.toLocaleString()} uncached, ${tokens.cacheReadTokens.toLocaleString()} cached, ${tokens.outputTokens.toLocaleString()} output)`,
+    `Cache Efficiency: ${(cacheEfficiency.hitRatio * 100).toFixed(1)}%${cacheEfficiency.warning ? ` [WARNING: ${cacheEfficiency.warning}]` : ""}`,
     `Estimated Cost: $${tokenEconomics.estimatedCostUsd}`,
   ];
+
+  if (thrashLoops.length > 0) {
+    lines.push("", "Thrash Loops:");
+    for (const loop of thrashLoops) {
+      lines.push(`  - ${loop.toolName} (${loop.count}x, turns ${loop.startTurn}-${loop.endTurn}, ${loop.reason}): ${loop.summary}`);
+    }
+  }
 
   const toolEntries = Object.entries(toolCallStats).sort((a, b) => b[1] - a[1]);
   if (toolEntries.length > 0) {
