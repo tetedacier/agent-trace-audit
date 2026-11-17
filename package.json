@@ -1,0 +1,16 @@
+{
+  "name": "agent-trace-audit",
+  "version": "0.1.0",
+  "description": "Zero-dependency CLI telemetry and orchestration forensics for local agentic CLI session traces.",
+  "type": "module",
+  "bin": {
+    "agent-trace-audit": "./bin/agent-trace-audit.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}
