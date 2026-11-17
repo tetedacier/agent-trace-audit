@@ -43,5 +43,17 @@ export function createAuditor(options = {}) {
       }
       throw new Error(`Session Trace "${idOrPrefix}" not found.`);
     },
+    auditAllSessions() {
+      const sessions = this.listSessions();
+      const traces = [];
+      for (const s of sessions) {
+        try {
+          traces.push(this.auditSession(s.id));
+        } catch {
+          // Skip unreadable sessions during portfolio scan
+        }
+      }
+      return traces;
+    },
   };
 }

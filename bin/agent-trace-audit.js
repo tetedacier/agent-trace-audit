@@ -1,10 +1,18 @@
 #!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 import { createAuditor } from "../src/audit.js";
-import { formatSessionList, formatSessionSummary } from "../src/formatters.js";
+import {
+  extractCommandInvocations,
+  formatCommands,
+  formatPortfolioReport,
+  formatSessionList,
+  formatSessionSummary,
+} from "../src/formatters.js";
 
 function parseArgs(argv) {
   const positional = [];
   let dataDir;
+  let output;
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -15,16 +23,20 @@ function parseArgs(argv) {
       dataDir = argv[++i];
     } else if (arg.startsWith("--data-dir=")) {
       dataDir = arg.slice("--data-dir=".length);
+    } else if (arg === "--output" && i + 1 < argv.length) {
+      output = argv[++i];
+    } else if (arg.startsWith("--output=")) {
+      output = arg.slice("--output=".length);
     } else {
       positional.push(arg);
     }
   }
 
-  return { command: positional[0] || "list", target: positional[1], dataDir, json };
+  return { command: positional[0] || "list", target: positional[1], dataDir, output, json };
 }
 
 function main() {
-  const { command, target, dataDir, json } = parseArgs(process.argv.slice(2));
+  const { command, target, dataDir, output, json } = parseArgs(process.argv.slice(2));
   const auditor = createAuditor({ dataDir });
 
   if (command === "list") {
@@ -41,6 +53,29 @@ function main() {
     }
     const trace = auditor.auditSession(target);
     console.log(json ? JSON.stringify(trace, null, 2) : formatSessionSummary(trace));
+    return;
+  }
+
+  if (command === "show-command") {
+    if (!target) {
+      console.error("Usage: agent-trace-audit show-command <session-id>");
+      process.exitCode = 1;
+      return;
+    }
+    const trace = auditor.auditSession(target);
+    console.log(json ? JSON.stringify(extractCommandInvocations(trace), null, 2) : formatCommands(trace));
+    return;
+  }
+
+  if (command === "report-all") {
+    const traces = auditor.auditAllSessions();
+    const content = json ? JSON.stringify(traces, null, 2) : formatPortfolioReport(traces);
+    if (output) {
+      writeFileSync(output, content, "utf8");
+      console.log(`Report written to ${output}`);
+    } else {
+      console.log(content);
+    }
     return;
   }
 
