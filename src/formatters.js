@@ -1,19 +1,51 @@
+import { basename } from "node:path";
+
+function formatTimestamp(ts) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts).slice(0, 19);
+  return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function formatWorkspace(workspaces) {
+  if (!Array.isArray(workspaces) || workspaces.length === 0) return "-";
+  const first = String(workspaces[0]).replace(/^file:\/\//, "");
+  return basename(first) || first;
+}
+
+function renderTable(headers, rows) {
+  const widths = headers.map((h, idx) =>
+    Math.max(h.length, ...rows.map((r) => String(r[idx] ?? "").length))
+  );
+  const formatRow = (cols) =>
+    cols.map((c, idx) => (idx === cols.length - 1 ? String(c ?? "") : String(c ?? "").padEnd(widths[idx]))).join("  ");
+  const separator = widths.map((w) => "-".repeat(w)).join("  ");
+  return [formatRow(headers), separator, ...rows.map(formatRow)].join("\n");
+}
+
 export function formatSessionList(sessions) {
   if (sessions.length === 0) {
     return "No Session Traces found.";
   }
-  const lines = [
+  const headers = ["ID", "AGENT", "STATUS", "LAST MODIFIED", "WORKSPACE", "TITLE"];
+  const rows = sessions.map((s) => [
+    s.id,
+    s.agent,
+    s.status,
+    formatTimestamp(s.lastModifiedAt),
+    formatWorkspace(s.workspaces),
+    s.title,
+  ]);
+  return [
     `Found ${sessions.length} Session Trace(s):`,
     "",
-  ];
-  for (const s of sessions) {
-    lines.push(`${s.id}  [${s.agent}]  ${s.status}  ${s.lastModifiedAt || "-"}  ${s.title}`);
-  }
-  return lines.join("\n");
+    renderTable(headers, rows),
+  ].join("\n");
 }
 
 export function formatSessionSummary(trace) {
-  const { tokens, tokenEconomics, cacheEfficiency, thrashLoops, toolCallStats, toolErrorsCount } = trace.diagnostics;
+  const { tokens, tokenEconomics, cacheEfficiency, thrashLoops, topTokenTurns, toolCallStats, toolErrorsCount } =
+    trace.diagnostics;
   const userTurns = trace.turns.filter((t) => t.role === "user").length;
   const modelTurns = trace.turns.filter((t) => t.role === "assistant").length;
 
@@ -22,7 +54,7 @@ export function formatSessionSummary(trace) {
     `Agent: ${trace.agent} | Status: ${trace.status}`,
     `Turns: ${userTurns} user, ${modelTurns} assistant`,
     `Tool Invocations: ${trace.toolInvocations.length} (errors: ${toolErrorsCount})`,
-    `Tokens: ${tokens.totalTokens.toLocaleString()} total (${tokens.uncachedInputTokens.toLocaleString()} uncached, ${tokens.cacheReadTokens.toLocaleString()} cached, ${tokens.outputTokens.toLocaleString()} output)`,
+    `Tokens: ${tokens.totalTokens.toLocaleString("en-US")} total (${tokens.uncachedInputTokens.toLocaleString("en-US")} uncached, ${tokens.cacheReadTokens.toLocaleString("en-US")} cached, ${tokens.outputTokens.toLocaleString("en-US")} output)`,
     `Cache Efficiency: ${(cacheEfficiency.hitRatio * 100).toFixed(1)}%${cacheEfficiency.warning ? ` [WARNING: ${cacheEfficiency.warning}]` : ""}`,
     `Estimated Cost: $${tokenEconomics.estimatedCostUsd}`,
   ];
@@ -34,11 +66,27 @@ export function formatSessionSummary(trace) {
     }
   }
 
+  if (topTokenTurns.length > 0) {
+    lines.push("", "Top Token Turns:");
+    for (const turn of topTokenTurns) {
+      lines.push(
+        `  - Turn ${turn.index}: ${turn.totalTokens.toLocaleString("en-US")} total (${turn.promptTokens.toLocaleString("en-US")} prompt, ${turn.cacheReadTokens.toLocaleString("en-US")} cached, ${turn.outputTokens.toLocaleString("en-US")} output)`
+      );
+    }
+  }
+
   const toolEntries = Object.entries(toolCallStats).sort((a, b) => b[1] - a[1]);
   if (toolEntries.length > 0) {
     lines.push("", "Tools:");
     for (const [name, count] of toolEntries) {
       lines.push(`  - ${name}: ${count}`);
+    }
+  }
+
+  if (trace.warnings?.length > 0) {
+    lines.push("", "Warnings:");
+    for (const w of trace.warnings) {
+      lines.push(`  - ${w}`);
     }
   }
 
@@ -57,7 +105,7 @@ export function formatCommands(trace) {
   const lines = [`Shell commands for ${trace.title} (${trace.id}):`, ""];
   for (const cmd of commands) {
     const status = cmd.isError ? "ERROR" : "OK";
-    lines.push(`[Turn ${cmd.turnIndex}] (${status}) ${cmd.timestamp || "-"}  $ ${cmd.command}`);
+    lines.push(`[Turn ${cmd.turnIndex}] (${status}) ${formatTimestamp(cmd.timestamp)}  $ ${cmd.command}`);
   }
   return lines.join("\n");
 }
@@ -69,6 +117,7 @@ export function formatPortfolioReport(traces) {
   let totalTokens = 0;
   let totalCost = 0;
   const aggregatedTools = {};
+  const allWarnings = [];
 
   for (const t of traces) {
     totalTurns += t.turns.length;
@@ -78,6 +127,9 @@ export function formatPortfolioReport(traces) {
     totalCost += t.diagnostics.tokenEconomics.estimatedCostUsd;
     for (const [name, count] of Object.entries(t.diagnostics.toolCallStats)) {
       aggregatedTools[name] = (aggregatedTools[name] || 0) + count;
+    }
+    if (t.warnings?.length) {
+      allWarnings.push(...t.warnings);
     }
   }
 
@@ -89,7 +141,7 @@ export function formatPortfolioReport(traces) {
     `- **Total Audited Sessions**: ${traces.length}`,
     `- **Total Turns**: ${totalTurns}`,
     `- **Total Tool Invocations**: ${totalTools} (errors: ${totalErrors})`,
-    `- **Total Tokens**: ${totalTokens.toLocaleString()}`,
+    `- **Total Tokens**: ${totalTokens.toLocaleString("en-US")}`,
     `- **Estimated Compute Cost**: $${totalCost.toFixed(4)} USD`,
     "",
     "## Aggregated Tool Invocations",
@@ -116,6 +168,13 @@ export function formatPortfolioReport(traces) {
     lines.push(
       `| ${t.title} | ${t.agent} | \`${t.id.slice(0, 12)}\` | ${t.turns.length} | ${t.toolInvocations.length} | $${t.diagnostics.tokenEconomics.estimatedCostUsd.toFixed(4)} |`
     );
+  }
+
+  if (allWarnings.length > 0) {
+    lines.push("", "## Warnings", "");
+    for (const w of allWarnings) {
+      lines.push(`- ${w}`);
+    }
   }
 
   return lines.join("\n") + "\n";
