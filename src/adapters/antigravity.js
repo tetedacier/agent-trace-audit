@@ -89,14 +89,21 @@ export function createAntigravityAdapter(dataDir) {
       const transcriptPath = join(brainDir, sessionId, ".system_generated", "logs", "transcript.jsonl");
       const turns = [];
       const toolInvocations = [];
+      const warnings = [];
       let startedAt = null;
       let lastModifiedAt = meta.last_modified_time || null;
       let toolErrorsCount = 0;
 
       if (existsSync(transcriptPath)) {
         const lines = readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean);
-        for (const line of lines) {
-          const item = JSON.parse(line);
+        for (let i = 0; i < lines.length; i++) {
+          let item;
+          try {
+            item = JSON.parse(lines[i]);
+          } catch {
+            warnings.push(`Skipped malformed JSONL at line ${i + 1} in ${sessionId}`);
+            continue;
+          }
           if (!startedAt && item.created_at) startedAt = item.created_at;
           if (item.created_at) lastModifiedAt = item.created_at;
 
@@ -161,6 +168,7 @@ export function createAntigravityAdapter(dataDir) {
         lastModifiedAt,
         turns,
         toolInvocations,
+        warnings,
         _rawToolErrorsCount: toolErrorsCount,
       };
     },

@@ -13,18 +13,35 @@ export function createAuditor(options = {}) {
       return adapters.flatMap((adapter) => adapter.list());
     },
 
-    auditSession(sessionId) {
+    resolveSession(idOrPrefix) {
+      const sessions = this.listSessions();
+      const exact = sessions.find((s) => s.id === idOrPrefix);
+      if (exact) return exact;
+
+      const matches = sessions.filter((s) => s.id.startsWith(idOrPrefix));
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        const candidates = matches.map((m) => `  - ${m.id} (${m.agent})`).join("\n");
+        throw new Error(`Ambiguous Session Trace prefix "${idOrPrefix}". Matches:\n${candidates}`);
+      }
+      throw new Error(`Session Trace "${idOrPrefix}" not found.`);
+    },
+
+    auditSession(idOrPrefix) {
+      const resolved = this.resolveSession(idOrPrefix);
       for (const adapter of adapters) {
-        const raw = adapter.load(sessionId);
+        if (adapter.name !== resolved.agent) continue;
+        const raw = adapter.load(resolved.id);
         if (raw) {
           const { _rawToolErrorsCount, ...trace } = raw;
           return {
             ...trace,
+            warnings: trace.warnings || [],
             diagnostics: computeDiagnostics(raw, pricing),
           };
         }
       }
-      throw new Error(`Session Trace "${sessionId}" not found.`);
+      throw new Error(`Session Trace "${idOrPrefix}" not found.`);
     },
   };
 }
