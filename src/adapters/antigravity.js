@@ -1,15 +1,22 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { emptyTokens, parseJsonlFile, summarizeText } from "./shared.js";
 
 export function resolveAntigravityRoot(dataDir) {
-  if (dataDir) {
-    const nested = join(dataDir, "antigravity");
+  const base = dataDir || process.env.AGENT_TRACE_AUDIT_DATA_DIR;
+  if (base) {
+    const nested = join(base, "antigravity");
     if (existsSync(join(nested, "conversation_summaries.db"))) return nested;
-    return dataDir;
+    return base;
   }
-  return process.env.AGENT_TRACE_AUDIT_DATA_DIR || join(homedir(), ".gemini/antigravity-cli");
+  return join(homedir(), ".gemini/antigravity-cli");
+}
+
+function normalizeStatus(rawStatus) {
+  if (!rawStatus) return "UNKNOWN";
+  return String(rawStatus).replace(/^CASCADE_RUN_STATUS_/, "");
 }
 
 function parseWorkspaces(raw) {
@@ -30,7 +37,7 @@ function cleanUserPrompt(content) {
     .trim();
 }
 
-function summarizeToolArgs(name, args) {
+function summarizeToolArgs(args) {
   if (!args || typeof args !== "object") return "";
   if (args.CommandLine) return String(args.CommandLine);
   if (args.Path) return String(args.Path);
@@ -46,9 +53,7 @@ export function createAntigravityAdapter(dataDir) {
   const brainDir = join(root, "brain");
 
   function openDb() {
-    if (!existsSync(summariesDbPath)) {
-      return null;
-    }
+    if (!existsSync(summariesDbPath)) return null;
     return new DatabaseSync(summariesDbPath, { readOnly: true });
   }
 
@@ -68,8 +73,8 @@ export function createAntigravityAdapter(dataDir) {
           id: row.conversation_id,
           agent: "antigravity",
           title: row.title || "Untitled Session",
-          status: row.status || "UNKNOWN",
-          stepCount: row.step_count || 0,
+          status: normalizeStatus(row.status),
+          turnCount: row.step_count || 0,
           workspaces: parseWorkspaces(row.workspace_uris),
           lastModifiedAt: row.last_modified_time || null,
         }));
@@ -99,27 +104,23 @@ export function createAntigravityAdapter(dataDir) {
       let lastModifiedAt = meta.last_modified_time || null;
       let toolErrorsCount = 0;
 
-      if (existsSync(transcriptPath)) {
-        const lines = readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean);
-        for (let i = 0; i < lines.length; i++) {
-          let item;
-          try {
-            item = JSON.parse(lines[i]);
-          } catch {
-            warnings.push(`Skipped malformed JSONL at line ${i + 1} in ${sessionId}`);
-            continue;
-          }
+      if (!existsSync(transcriptPath)) {
+        warnings.push(`Missing transcript.jsonl for ${sessionId}`);
+      } else {
+        const parsed = parseJsonlFile(transcriptPath, sessionId);
+        warnings.push(...parsed.warnings);
+
+        for (const item of parsed.items) {
           if (!startedAt && item.created_at) startedAt = item.created_at;
           if (item.created_at) lastModifiedAt = item.created_at;
 
           if (item.type === "USER_INPUT") {
-            const text = cleanUserPrompt(item.content);
             turns.push({
               index: turns.length + 1,
               role: "user",
               timestamp: item.created_at || null,
-              summary: text.slice(0, 160) + (text.length > 160 ? "..." : ""),
-              tokens: { promptTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+              summary: summarizeText(cleanUserPrompt(item.content)),
+              tokens: emptyTokens(),
               toolInvocations: [],
             });
           } else if (item.type === "PLANNER_RESPONSE") {
@@ -133,7 +134,7 @@ export function createAntigravityAdapter(dataDir) {
                   turnIndex,
                   timestamp: item.created_at || null,
                   name,
-                  summary: summarizeToolArgs(name, args),
+                  summary: summarizeToolArgs(args),
                   command: args.CommandLine ? String(args.CommandLine) : null,
                   isError: false,
                 };
@@ -156,8 +157,9 @@ export function createAntigravityAdapter(dataDir) {
 
           if (item.status === "ERROR") {
             toolErrorsCount++;
-            if (toolInvocations.length > 0) {
-              toolInvocations[toolInvocations.length - 1].isError = true;
+            const lastAssistantTurn = [...turns].reverse().find((t) => t.role === "assistant" && t.toolInvocations.length > 0);
+            if (lastAssistantTurn && lastAssistantTurn.toolInvocations.length === 1) {
+              lastAssistantTurn.toolInvocations[0].isError = true;
             }
           }
         }
@@ -167,14 +169,14 @@ export function createAntigravityAdapter(dataDir) {
         id: sessionId,
         agent: "antigravity",
         title: meta.title || "Untitled Session",
-        status: meta.status || "UNKNOWN",
+        status: normalizeStatus(meta.status),
         workspace: parseWorkspaces(meta.workspace_uris)[0] || null,
         startedAt,
         lastModifiedAt,
         turns,
         toolInvocations,
+        toolErrorsCount,
         warnings,
-        _rawToolErrorsCount: toolErrorsCount,
       };
     },
   };

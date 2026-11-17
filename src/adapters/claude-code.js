@@ -1,12 +1,14 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { collectJsonlFiles, emptyTokens, parseJsonlFile, summarizeText } from "./shared.js";
 
 function resolveClaudeProjectsDir(dataDir) {
-  if (dataDir) {
-    const nested = join(dataDir, "claude", "projects");
+  const base = dataDir || process.env.AGENT_TRACE_AUDIT_DATA_DIR;
+  if (base) {
+    const nested = join(base, "claude", "projects");
     if (existsSync(nested)) return nested;
-    const directProjects = join(dataDir, "projects");
+    const directProjects = join(base, "projects");
     if (existsSync(directProjects)) return directProjects;
     return null;
   }
@@ -14,19 +16,6 @@ function resolveClaudeProjectsDir(dataDir) {
     return process.env.AGENT_TRACE_AUDIT_CLAUDE_DIR;
   }
   return join(homedir(), ".claude", "projects");
-}
-
-function collectJsonlFiles(dir, out = []) {
-  if (!dir || !existsSync(dir)) return out;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      collectJsonlFiles(full, out);
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      out.push(full);
-    }
-  }
-  return out;
 }
 
 function extractUserText(content) {
@@ -54,14 +43,14 @@ function summarizeInput(input) {
  */
 export function createClaudeCodeAdapter(dataDir) {
   const projectsDir = resolveClaudeProjectsDir(dataDir);
+  const pathById = new Map();
 
   function parseFile(filePath) {
     const fallbackId = basename(filePath, ".jsonl");
-    const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
+    const parsed = parseJsonlFile(filePath, fallbackId);
     const turns = [];
     const toolInvocations = [];
     const toolByUseId = new Map();
-    const warnings = [];
 
     let id = fallbackId;
     let workspace = null;
@@ -69,15 +58,7 @@ export function createClaudeCodeAdapter(dataDir) {
     let lastModifiedAt = null;
     let title = null;
 
-    for (let i = 0; i < lines.length; i++) {
-      let item;
-      try {
-        item = JSON.parse(lines[i]);
-      } catch {
-        warnings.push(`Skipped malformed JSONL at line ${i + 1} in ${fallbackId}`);
-        continue;
-      }
-
+    for (const item of parsed.items) {
       if (item.sessionId) id = item.sessionId;
       if (item.cwd && !workspace) workspace = item.cwd;
       if (item.timestamp) {
@@ -89,7 +70,6 @@ export function createClaudeCodeAdapter(dataDir) {
       const content = item.message?.content;
 
       if (role === "user") {
-        // Check for tool_result blocks first
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === "tool_result" && block.tool_use_id && block.is_error) {
@@ -105,8 +85,8 @@ export function createClaudeCodeAdapter(dataDir) {
             index: turns.length + 1,
             role: "user",
             timestamp: item.timestamp || null,
-            summary: text.slice(0, 160) + (text.length > 160 ? "..." : ""),
-            tokens: { promptTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+            summary: summarizeText(text),
+            tokens: emptyTokens(),
             toolInvocations: [],
           });
         }
@@ -152,6 +132,8 @@ export function createClaudeCodeAdapter(dataDir) {
       lastModifiedAt = statSync(filePath).mtime.toISOString();
     }
 
+    pathById.set(id, filePath);
+
     return {
       id,
       agent: "claude-code",
@@ -162,7 +144,7 @@ export function createClaudeCodeAdapter(dataDir) {
       lastModifiedAt,
       turns,
       toolInvocations,
-      warnings,
+      warnings: parsed.warnings,
     };
   }
 
@@ -178,18 +160,20 @@ export function createClaudeCodeAdapter(dataDir) {
           agent: "claude-code",
           title: trace.title,
           status: trace.status,
-          stepCount: trace.turns.length,
+          turnCount: trace.turns.length,
           workspaces: trace.workspace ? [trace.workspace] : [],
           lastModifiedAt: trace.lastModifiedAt,
-          _filePath: filePath,
         };
       });
     },
 
     load(sessionId) {
-      const match = this.list().find((s) => s.id === sessionId);
-      if (!match) return null;
-      return parseFile(match._filePath);
+      let filePath = pathById.get(sessionId);
+      if (!filePath) {
+        this.list();
+        filePath = pathById.get(sessionId);
+      }
+      return filePath ? parseFile(filePath) : null;
     },
   };
 }

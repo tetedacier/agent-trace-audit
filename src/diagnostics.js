@@ -9,6 +9,31 @@ const THRASH_THRESHOLD = 3;
 const LOW_CACHE_RATIO_THRESHOLD = 0.2;
 const NON_TRIVIAL_PROMPT_TOKENS = 10_000;
 
+export function validatePricing(raw) {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Invalid pricing configuration: expected a JSON object.");
+  }
+  for (const field of ["uncachedInputPerM", "cacheReadPerM", "outputPerM"]) {
+    if (typeof raw[field] !== "number" || Number.isNaN(raw[field]) || raw[field] < 0) {
+      throw new Error(`Invalid pricing configuration: "${field}" must be a non-negative number.`);
+    }
+  }
+  return {
+    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : "custom-pricing",
+    uncachedInputPerM: raw.uncachedInputPerM,
+    cacheReadPerM: raw.cacheReadPerM,
+    outputPerM: raw.outputPerM,
+  };
+}
+
+function findRun(toolInvocations, startIndex, predicate) {
+  let j = startIndex + 1;
+  while (j < toolInvocations.length && predicate(toolInvocations[j])) {
+    j++;
+  }
+  return j;
+}
+
 function detectThrashLoops(toolInvocations) {
   const loops = [];
   let i = 0;
@@ -16,29 +41,38 @@ function detectThrashLoops(toolInvocations) {
   while (i < toolInvocations.length) {
     const start = toolInvocations[i];
     const startKey = `${start.name}::${start.summary}`;
-    let j = i + 1;
 
-    while (j < toolInvocations.length) {
-      const curr = toolInvocations[j];
-      const sameCall = `${curr.name}::${curr.summary}` === startKey;
-      const consecutiveFailures = start.isError && curr.isError && curr.name === start.name;
-      if (!sameCall && !consecutiveFailures) break;
-      j++;
+    if (start.isError) {
+      const failEnd = findRun(toolInvocations, i, (c) => c.isError && c.name === start.name);
+      if (failEnd - i >= THRASH_THRESHOLD) {
+        loops.push({
+          toolName: start.name,
+          summary: start.summary,
+          count: failEnd - i,
+          startTurn: start.turnIndex,
+          endTurn: toolInvocations[failEnd - 1].turnIndex,
+          reason: "consecutive-failing-invocations",
+        });
+        i = failEnd;
+        continue;
+      }
     }
 
-    const count = j - i;
-    if (count >= THRASH_THRESHOLD) {
-      const allErrors = toolInvocations.slice(i, j).every((inv) => inv.isError);
+    const sameEnd = findRun(toolInvocations, i, (c) => `${c.name}::${c.summary}` === startKey);
+    if (sameEnd - i >= THRASH_THRESHOLD) {
       loops.push({
         toolName: start.name,
         summary: start.summary,
-        count,
+        count: sameEnd - i,
         startTurn: start.turnIndex,
-        endTurn: toolInvocations[j - 1].turnIndex,
-        reason: allErrors ? "consecutive-failing-invocations" : "consecutive-identical-invocations",
+        endTurn: toolInvocations[sameEnd - 1].turnIndex,
+        reason: "consecutive-identical-invocations",
       });
+      i = sameEnd;
+      continue;
     }
-    i = j;
+
+    i++;
   }
 
   return loops;
@@ -99,7 +133,7 @@ export function computeDiagnostics(trace, pricing = DEFAULT_PRICING) {
     if (inv.isError) errorFromInvocations++;
   }
 
-  const toolErrorsCount = Math.max(errorFromInvocations, trace._rawToolErrorsCount || 0);
+  const toolErrorsCount = Math.max(errorFromInvocations, trace.toolErrorsCount || 0);
 
   return {
     tokens: {

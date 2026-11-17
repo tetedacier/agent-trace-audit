@@ -7,7 +7,7 @@ import { computeDiagnostics, DEFAULT_PRICING } from "./diagnostics.js";
  * Create the top-level audit pipeline over configured Trace Adapters.
  */
 export function createAuditor(options = {}) {
-  const adapters = options.adapters || [
+  const adapters = [
     createAntigravityAdapter(options.dataDir),
     createClaudeCodeAdapter(options.dataDir),
     createCodexAdapter(options.dataDir),
@@ -17,8 +17,7 @@ export function createAuditor(options = {}) {
   return {
     listSessions(filter = {}) {
       const all = adapters.flatMap((adapter) => adapter.list());
-      const filtered = filter.agent ? all.filter((s) => s.agent === filter.agent) : all;
-      return filtered.map(({ _filePath, ...rest }) => rest);
+      return filter.agent ? all.filter((s) => s.agent === filter.agent) : all;
     },
 
     resolveSession(idOrPrefix) {
@@ -41,7 +40,7 @@ export function createAuditor(options = {}) {
         if (adapter.name !== resolved.agent) continue;
         const raw = adapter.load(resolved.id);
         if (raw) {
-          const { _rawToolErrorsCount, ...trace } = raw;
+          const { toolErrorsCount, ...trace } = raw;
           return {
             ...trace,
             warnings: trace.warnings || [],
@@ -51,14 +50,27 @@ export function createAuditor(options = {}) {
       }
       throw new Error(`Session Trace "${idOrPrefix}" not found.`);
     },
+
     auditAllSessions(filter = {}) {
       const sessions = this.listSessions(filter);
       const traces = [];
       for (const s of sessions) {
         try {
           traces.push(this.auditSession(s.id));
-        } catch {
-          // Skip unreadable sessions during portfolio scan
+        } catch (err) {
+          traces.push({
+            id: s.id,
+            agent: s.agent,
+            title: s.title,
+            status: "ERROR",
+            workspace: s.workspaces?.[0] || null,
+            startedAt: null,
+            lastModifiedAt: s.lastModifiedAt,
+            turns: [],
+            toolInvocations: [],
+            warnings: [`Failed to audit ${s.id}: ${err.message}`],
+            diagnostics: computeDiagnostics({ turns: [], toolInvocations: [], toolErrorsCount: 0 }, pricing),
+          });
         }
       }
       return traces;

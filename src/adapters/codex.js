@@ -1,12 +1,14 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { collectJsonlFiles, emptyTokens, parseJsonlFile, summarizeText } from "./shared.js";
 
 function resolveCodexSessionsDir(dataDir) {
-  if (dataDir) {
-    const nested = join(dataDir, "codex", "sessions");
+  const base = dataDir || process.env.AGENT_TRACE_AUDIT_DATA_DIR;
+  if (base) {
+    const nested = join(base, "codex", "sessions");
     if (existsSync(nested)) return nested;
-    const directSessions = join(dataDir, "sessions");
+    const directSessions = join(base, "sessions");
     if (existsSync(directSessions)) return directSessions;
     return null;
   }
@@ -16,20 +18,7 @@ function resolveCodexSessionsDir(dataDir) {
   return join(homedir(), ".codex", "sessions");
 }
 
-function collectJsonlFiles(dir, out = []) {
-  if (!dir || !existsSync(dir)) return out;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      collectJsonlFiles(full, out);
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
-function extractInputText(content) {
+function extractText(content) {
   if (typeof content === "string") return content.trim();
   if (Array.isArray(content)) {
     return content
@@ -69,30 +58,24 @@ function isErrorOutput(outputRaw) {
  */
 export function createCodexAdapter(dataDir) {
   const sessionsDir = resolveCodexSessionsDir(dataDir);
+  const pathById = new Map();
 
   function parseFile(filePath) {
     const fallbackId = basename(filePath, ".jsonl");
-    const lines = readFileSync(filePath, "utf8").split("\n").filter(Boolean);
+    const parsed = parseJsonlFile(filePath, fallbackId);
     const turns = [];
     const toolInvocations = [];
     const callById = new Map();
-    const warnings = [];
 
     let id = fallbackId;
     let workspace = null;
     let startedAt = null;
     let lastModifiedAt = null;
     let title = null;
+    let sawLastTokenUsage = false;
+    let latestTotalUsage = null;
 
-    for (let i = 0; i < lines.length; i++) {
-      let item;
-      try {
-        item = JSON.parse(lines[i]);
-      } catch {
-        warnings.push(`Skipped malformed JSONL at line ${i + 1} in ${fallbackId}`);
-        continue;
-      }
-
+    for (const item of parsed.items) {
       if (item.timestamp) {
         if (!startedAt) startedAt = item.timestamp;
         lastModifiedAt = item.timestamp;
@@ -109,18 +92,26 @@ export function createCodexAdapter(dataDir) {
 
       if (item.type === "response_item") {
         if (payload.type === "message" && payload.role === "user") {
-          const text = extractInputText(payload.content);
+          const text = extractText(payload.content);
           if (text) {
             if (!title) title = text.slice(0, 80);
             turns.push({
               index: turns.length + 1,
               role: "user",
               timestamp: item.timestamp || null,
-              summary: text.slice(0, 160) + (text.length > 160 ? "..." : ""),
-              tokens: { promptTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+              summary: summarizeText(text),
+              tokens: emptyTokens(),
               toolInvocations: [],
             });
           }
+        } else if (payload.type === "message" && payload.role === "assistant") {
+          turns.push({
+            index: turns.length + 1,
+            role: "assistant",
+            timestamp: item.timestamp || null,
+            tokens: emptyTokens(),
+            toolInvocations: [],
+          });
         } else if (payload.type === "function_call") {
           const args = parseArguments(payload.arguments);
           const command = args.command
@@ -143,7 +134,7 @@ export function createCodexAdapter(dataDir) {
             index: turnIndex,
             role: "assistant",
             timestamp: item.timestamp || null,
-            tokens: { promptTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+            tokens: emptyTokens(),
             toolInvocations: [inv],
           });
         } else if (payload.type === "function_call_output" && payload.call_id) {
@@ -153,26 +144,59 @@ export function createCodexAdapter(dataDir) {
           }
         }
       } else if (item.type === "event_msg" && payload.type === "token_count") {
-        const usage = payload.info?.last_token_usage || payload.info?.total_token_usage;
-        if (usage) {
-          turns.push({
-            index: turns.length + 1,
-            role: "assistant",
-            timestamp: item.timestamp || null,
-            tokens: {
-              promptTokens: usage.input_tokens || 0,
-              cacheReadTokens: usage.cached_input_tokens || 0,
-              outputTokens: usage.output_tokens || 0,
-            },
-            toolInvocations: [],
-          });
+        const lastUsage = payload.info?.last_token_usage;
+        if (lastUsage) {
+          sawLastTokenUsage = true;
+          const targetTurn = [...turns].reverse().find((t) => t.role === "assistant");
+          const usageTokens = {
+            promptTokens: lastUsage.input_tokens || 0,
+            cacheReadTokens: lastUsage.cached_input_tokens || 0,
+            outputTokens: lastUsage.output_tokens || 0,
+          };
+          if (targetTurn) {
+            targetTurn.tokens.promptTokens += usageTokens.promptTokens;
+            targetTurn.tokens.cacheReadTokens += usageTokens.cacheReadTokens;
+            targetTurn.tokens.outputTokens += usageTokens.outputTokens;
+          } else {
+            turns.push({
+              index: turns.length + 1,
+              role: "assistant",
+              timestamp: item.timestamp || null,
+              tokens: usageTokens,
+              toolInvocations: [],
+            });
+          }
+        } else if (payload.info?.total_token_usage) {
+          latestTotalUsage = payload.info.total_token_usage;
         }
+      }
+    }
+
+    if (!sawLastTokenUsage && latestTotalUsage) {
+      const targetTurn = [...turns].reverse().find((t) => t.role === "assistant");
+      const usageTokens = {
+        promptTokens: latestTotalUsage.input_tokens || 0,
+        cacheReadTokens: latestTotalUsage.cached_input_tokens || 0,
+        outputTokens: latestTotalUsage.output_tokens || 0,
+      };
+      if (targetTurn) {
+        targetTurn.tokens = usageTokens;
+      } else {
+        turns.push({
+          index: turns.length + 1,
+          role: "assistant",
+          timestamp: lastModifiedAt,
+          tokens: usageTokens,
+          toolInvocations: [],
+        });
       }
     }
 
     if (!lastModifiedAt) {
       lastModifiedAt = statSync(filePath).mtime.toISOString();
     }
+
+    pathById.set(id, filePath);
 
     return {
       id,
@@ -184,7 +208,7 @@ export function createCodexAdapter(dataDir) {
       lastModifiedAt,
       turns,
       toolInvocations,
-      warnings,
+      warnings: parsed.warnings,
     };
   }
 
@@ -200,18 +224,20 @@ export function createCodexAdapter(dataDir) {
           agent: "codex",
           title: trace.title,
           status: trace.status,
-          stepCount: trace.turns.length,
+          turnCount: trace.turns.length,
           workspaces: trace.workspace ? [trace.workspace] : [],
           lastModifiedAt: trace.lastModifiedAt,
-          _filePath: filePath,
         };
       });
     },
 
     load(sessionId) {
-      const match = this.list().find((s) => s.id === sessionId);
-      if (!match) return null;
-      return parseFile(match._filePath);
+      let filePath = pathById.get(sessionId);
+      if (!filePath) {
+        this.list();
+        filePath = pathById.get(sessionId);
+      }
+      return filePath ? parseFile(filePath) : null;
     },
   };
 }

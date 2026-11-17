@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { createAuditor } from "../src/audit.js";
+import { validatePricing } from "../src/diagnostics.js";
 import {
   extractCommandInvocations,
   formatCommands,
@@ -9,45 +11,33 @@ import {
   formatSessionSummary,
 } from "../src/formatters.js";
 
-function parseArgs(argv) {
-  const positional = [];
-  let dataDir;
-  let output;
-  let agent;
-  let pricingPath;
-  let json = false;
+function parseCliArgs(argv) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      json: { type: "boolean", default: false },
+      "data-dir": { type: "string" },
+      output: { type: "string" },
+      agent: { type: "string" },
+      pricing: { type: "string" },
+    },
+  });
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--json") {
-      json = true;
-    } else if (arg === "--data-dir" && i + 1 < argv.length) {
-      dataDir = argv[++i];
-    } else if (arg.startsWith("--data-dir=")) {
-      dataDir = arg.slice("--data-dir=".length);
-    } else if (arg === "--output" && i + 1 < argv.length) {
-      output = argv[++i];
-    } else if (arg.startsWith("--output=")) {
-      output = arg.slice("--output=".length);
-    } else if (arg === "--agent" && i + 1 < argv.length) {
-      agent = argv[++i];
-    } else if (arg.startsWith("--agent=")) {
-      agent = arg.slice("--agent=".length);
-    } else if (arg === "--pricing" && i + 1 < argv.length) {
-      pricingPath = argv[++i];
-    } else if (arg.startsWith("--pricing=")) {
-      pricingPath = arg.slice("--pricing=".length);
-    } else {
-      positional.push(arg);
-    }
-  }
-
-  return { command: positional[0] || "list", target: positional[1], dataDir, output, agent, pricingPath, json };
+  return {
+    command: positionals[0] || "list",
+    target: positionals[1],
+    dataDir: values["data-dir"],
+    output: values.output,
+    agent: values.agent,
+    pricingPath: values.pricing,
+    json: values.json,
+  };
 }
 
 function main() {
-  const { command, target, dataDir, output, agent, pricingPath, json } = parseArgs(process.argv.slice(2));
-  const pricing = pricingPath ? JSON.parse(readFileSync(pricingPath, "utf8")) : undefined;
+  const { command, target, dataDir, output, agent, pricingPath, json } = parseCliArgs(process.argv.slice(2));
+  const pricing = pricingPath ? validatePricing(JSON.parse(readFileSync(pricingPath, "utf8"))) : undefined;
   const auditor = createAuditor({ dataDir, pricing });
 
   if (command === "list") {
