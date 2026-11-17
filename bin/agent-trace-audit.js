@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createAuditor } from "../src/audit.js";
 import {
   extractCommandInvocations,
@@ -14,6 +14,7 @@ function parseArgs(argv) {
   let dataDir;
   let output;
   let agent;
+  let pricingPath;
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -32,17 +33,22 @@ function parseArgs(argv) {
       agent = argv[++i];
     } else if (arg.startsWith("--agent=")) {
       agent = arg.slice("--agent=".length);
+    } else if (arg === "--pricing" && i + 1 < argv.length) {
+      pricingPath = argv[++i];
+    } else if (arg.startsWith("--pricing=")) {
+      pricingPath = arg.slice("--pricing=".length);
     } else {
       positional.push(arg);
     }
   }
 
-  return { command: positional[0] || "list", target: positional[1], dataDir, output, agent, json };
+  return { command: positional[0] || "list", target: positional[1], dataDir, output, agent, pricingPath, json };
 }
 
 function main() {
-  const { command, target, dataDir, output, agent, json } = parseArgs(process.argv.slice(2));
-  const auditor = createAuditor({ dataDir });
+  const { command, target, dataDir, output, agent, pricingPath, json } = parseArgs(process.argv.slice(2));
+  const pricing = pricingPath ? JSON.parse(readFileSync(pricingPath, "utf8")) : undefined;
+  const auditor = createAuditor({ dataDir, pricing });
 
   if (command === "list") {
     const sessions = auditor.listSessions({ agent });
