@@ -8,7 +8,7 @@ function resolveClaudeProjectsDir(dataDir) {
     if (existsSync(nested)) return nested;
     const directProjects = join(dataDir, "projects");
     if (existsSync(directProjects)) return directProjects;
-    return dataDir;
+    return null;
   }
   if (process.env.AGENT_TRACE_AUDIT_CLAUDE_DIR) {
     return process.env.AGENT_TRACE_AUDIT_CLAUDE_DIR;
@@ -17,7 +17,7 @@ function resolveClaudeProjectsDir(dataDir) {
 }
 
 function collectJsonlFiles(dir, out = []) {
-  if (!existsSync(dir)) return out;
+  if (!dir || !existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {

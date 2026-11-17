@@ -1,5 +1,6 @@
 import { createAntigravityAdapter } from "./adapters/antigravity.js";
 import { createClaudeCodeAdapter } from "./adapters/claude-code.js";
+import { createCodexAdapter } from "./adapters/codex.js";
 import { computeDiagnostics, DEFAULT_PRICING } from "./diagnostics.js";
 
 /**
@@ -9,6 +10,7 @@ export function createAuditor(options = {}) {
   const adapters = options.adapters || [
     createAntigravityAdapter(options.dataDir),
     createClaudeCodeAdapter(options.dataDir),
+    createCodexAdapter(options.dataDir),
   ];
   const pricing = options.pricing || DEFAULT_PRICING;
 
