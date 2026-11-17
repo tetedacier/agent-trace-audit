@@ -11,6 +11,19 @@ Qualitative retrospective workflows (like `/retro`) often ask an agent to search
 - **Thrash Loop Detection**: flags 3+ consecutive identical or failing Tool Invocations.
 - **Command & Portfolio Audits**: `show-command` per session and `report-all` Markdown portfolio summaries.
 
+## Supported Agents & Feedback
+
+v1 includes Trace Adapters for:
+
+- **Antigravity** (tested against real local sessions and fixtures)
+- **Claude Code** *(synthetic-fixture tested)*
+- **Codex CLI** *(synthetic-fixture tested)*
+
+> [!NOTE]
+> The **Claude Code** and **Codex CLI** adapters were implemented against documented JSONL structures and synthetic test fixtures, as I do not currently have active subscriptions to validate them against live sessions. If you use Claude Code or Codex CLI and hit parsing mismatches or missing fields, please open a **GitHub Issue** with feedback or a sanitized sample trace.
+
+Other agentic CLI tools (such as Gemini CLI, OpenCode, Aider, Goose, or Pi) are not covered in v1, with no promise of future integration.
+
 ## Architecture
 
 ```
@@ -25,6 +38,9 @@ Codex CLI (Rollout JSONL)    ─┘
 ## Quickstart
 
 ```bash
+# Show all commands and options (default when no command is given)
+node bin/agent-trace-audit.js help
+
 # List discovered sessions
 node bin/agent-trace-audit.js list
 
@@ -50,6 +66,7 @@ node bin/agent-trace-audit.js report-all --output portfolio.md
 - `--agent <antigravity|claude-code|codex>`: filter `list` or `report-all`
 - `--pricing <path.json>`: override default per-million token rates
 - `--json`: emit stable JSON output
+- `-h, --help`: show help
 
 ## Testing
 
