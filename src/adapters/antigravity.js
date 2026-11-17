@@ -4,7 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export function resolveAntigravityRoot(dataDir) {
-  return dataDir || process.env.AGENT_TRACE_AUDIT_DATA_DIR || join(homedir(), ".gemini/antigravity-cli");
+  if (dataDir) {
+    const nested = join(dataDir, "antigravity");
+    if (existsSync(join(nested, "conversation_summaries.db"))) return nested;
+    return dataDir;
+  }
+  return process.env.AGENT_TRACE_AUDIT_DATA_DIR || join(homedir(), ".gemini/antigravity-cli");
 }
 
 function parseWorkspaces(raw) {

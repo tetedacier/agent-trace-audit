@@ -13,6 +13,7 @@ function parseArgs(argv) {
   const positional = [];
   let dataDir;
   let output;
+  let agent;
   let json = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -27,20 +28,24 @@ function parseArgs(argv) {
       output = argv[++i];
     } else if (arg.startsWith("--output=")) {
       output = arg.slice("--output=".length);
+    } else if (arg === "--agent" && i + 1 < argv.length) {
+      agent = argv[++i];
+    } else if (arg.startsWith("--agent=")) {
+      agent = arg.slice("--agent=".length);
     } else {
       positional.push(arg);
     }
   }
 
-  return { command: positional[0] || "list", target: positional[1], dataDir, output, json };
+  return { command: positional[0] || "list", target: positional[1], dataDir, output, agent, json };
 }
 
 function main() {
-  const { command, target, dataDir, output, json } = parseArgs(process.argv.slice(2));
+  const { command, target, dataDir, output, agent, json } = parseArgs(process.argv.slice(2));
   const auditor = createAuditor({ dataDir });
 
   if (command === "list") {
-    const sessions = auditor.listSessions();
+    const sessions = auditor.listSessions({ agent });
     console.log(json ? JSON.stringify(sessions, null, 2) : formatSessionList(sessions));
     return;
   }
@@ -68,7 +73,7 @@ function main() {
   }
 
   if (command === "report-all") {
-    const traces = auditor.auditAllSessions();
+    const traces = auditor.auditAllSessions({ agent });
     const content = json ? JSON.stringify(traces, null, 2) : formatPortfolioReport(traces);
     if (output) {
       writeFileSync(output, content, "utf8");
